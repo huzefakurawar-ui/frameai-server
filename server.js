@@ -12,7 +12,14 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// Fix CORS - allow all origins
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors());
+
 app.use(express.json({ limit: '500mb' }));
 
 // Store uploads in temp directory
@@ -45,7 +52,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
   });
 });
 
-// Edit endpoint - merge videos, add audio, text overlay
+// Edit endpoint
 app.post('/edit', async (req, res) => {
   const { clips, audioFilename, settings } = req.body;
 
@@ -63,23 +70,19 @@ app.post('/edit', async (req, res) => {
 
   try {
     if (clips.length === 1) {
-      // Single clip processing
+      // Single clip
       const inputPath = path.join(tmpDir, clips[0]);
 
       await new Promise((resolve, reject) => {
         let cmd = ffmpeg(inputPath);
-
         const filters = [];
 
-        // Speed
         if (speed !== 1.0) {
           filters.push(`setpts=${(1/speed).toFixed(2)}*PTS`);
         }
 
-        // Scale
         filters.push('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2');
 
-        // Text overlay
         if (textOverlay) {
           const safeText = textOverlay.replace(/'/g, '').replace(/:/g, ' ');
           const yPos = textPosition === 'top' ? '50' : textPosition === 'center' ? '(h-text_h)/2' : 'h-th-60';
@@ -88,7 +91,6 @@ app.post('/edit', async (req, res) => {
 
         cmd = cmd.videoFilters(filters);
 
-        // Audio
         if (audioFilename) {
           const audioPath = path.join(tmpDir, audioFilename);
           if (fs.existsSync(audioPath)) {
@@ -106,7 +108,7 @@ app.post('/edit', async (req, res) => {
       });
 
     } else {
-      // Multiple clips - re-encode each then concat
+      // Multiple clips - re-encode then concat
       const reEncodedPaths = [];
 
       for (let i = 0; i < clips.length; i++) {
@@ -129,13 +131,12 @@ app.post('/edit', async (req, res) => {
         });
       }
 
-      // Create concat list
+      // Concat list
       const concatList = path.join(tmpDir, `concat_${Date.now()}.txt`);
       fs.writeFileSync(concatList, reEncodedPaths.map(p => `file '${p}'`).join('\n'));
 
       const concatOutput = path.join(tmpDir, `concat_out_${Date.now()}.mp4`);
 
-      // Concat
       await new Promise((resolve, reject) => {
         ffmpeg()
           .input(concatList)
@@ -147,7 +148,7 @@ app.post('/edit', async (req, res) => {
           .run();
       });
 
-      // Apply text overlay and audio to concat output
+      // Apply text and audio to final output
       await new Promise((resolve, reject) => {
         let cmd = ffmpeg(concatOutput);
         const filters = [];
@@ -176,19 +177,18 @@ app.post('/edit', async (req, res) => {
           .run();
       });
 
-      // Cleanup temp files
+      // Cleanup
       reEncodedPaths.forEach(p => { try { fs.unlinkSync(p); } catch(e) {} });
       try { fs.unlinkSync(concatList); fs.unlinkSync(concatOutput); } catch(e) {}
     }
 
-    // Send the output file
+    // Stream output file to client
     res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', `attachment; filename="frameai_output.mp4"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="frameai_output.mp4"');
+    res.setHeader('Access-Control-Allow-Origin', '*');
     const stream = fs.createReadStream(outputPath);
     stream.pipe(res);
-    stream.on('end', () => {
-      try { fs.unlinkSync(outputPath); } catch(e) {}
-    });
+    stream.on('end', () => { try { fs.unlinkSync(outputPath); } catch(e) {} });
 
   } catch (err) {
     console.error('FFmpeg error:', err);
